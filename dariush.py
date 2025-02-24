@@ -312,5 +312,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ خطای بحرانی: {e}")
         exit(1)
-# Copyright (c) 2025 hoseingnz
+# Copyright (c) 2025 hosein davod abadi farahani
 # Licensed under the MIT License (https://opensource.org/licenses/MIT)
