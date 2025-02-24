@@ -64,7 +64,7 @@ class PersianTokenizer:
             raise RuntimeError(f"خطا در بارگیری دیتاست: {e}")
 
     def _train(self, text_iterator):
-        self.tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+        self.tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
         trainer = trainers.BpeTrainer(
             vocab_size=config.vocab_size,
             special_tokens=list(self.special_tokens.keys()),
@@ -83,53 +83,56 @@ class PersianTokenizer:
 
 # 3. دیتاست هوشمند چندمنظوره
 class PersianMultiTaskDataset(Dataset):
-    def __init__(self, tokenizer, text_source="hf", poetry_source=None, sentiment_source=None):
+    def __init__(self, tokenizer, text_source="hf"):
         self.tokenizer = tokenizer
-        self.data = []
-        
-        # بارگیری داده‌های متنی
-        if text_source == "hf":
-            dataset = load_dataset("oscar", "unshuffled_deduplicated_fa")
-            self.texts = dataset["train"]["text"][:10000]
-        
-        # بارگیری داده‌های شعر
-        if poetry_source:
-            self.poems = self._load_poetry_data(poetry_source)
-        
-        # بارگیری داده‌های احساسات
-        if sentiment_source:
-            self.sentiments = self._load_sentiment_data(sentiment_source)
-
-    def _load_poetry_data(self, path):
-        return [{"text": "به نام خداوند جان و خرد", "bahr": "hazaj", "rhyme": "ar"}]
-
-    def _load_sentiment_data(self, path):
-        return [("این فیلم عالی بود!", 2), ("خیلی بد بود!", 0)]
+        self.texts = load_dataset("oscar", "unshuffled_deduplicated_fa")["train"]["text"][:10000]
+        self.task_distribution = [0.6, 0.3, 0.1]  # توزیع تسک‌ها: متن، شعر، احساسات
 
     def __len__(self):
         return 10000  # برای ساده‌سازی
 
     def __getitem__(self, idx):
-        task_type = random.choice(["text", "poetry", "sentiment"])
+        task_type = random.choices(["text", "poetry", "sentiment"], weights=self.task_distribution, k=1)[0]
         
         if task_type == "text":
-            text = self.texts[idx % len(self.texts)]
-            tokens = self.tokenizer.encode(text)
-            chunk = tokens[:config.max_seq_len]
-            return {"input_ids": chunk[:-1], "labels": chunk[1:], "task": "text"}
-        
+            return self._process_text(idx)
         elif task_type == "poetry":
-            poem = self.poems[idx % len(self.poems)]
-            tokens = self.tokenizer.encode(
-                f"[BAHR]{poem['bahr']} [RHYME]{poem['rhyme']} {poem['text']}"
-            )
-            chunk = tokens[:config.max_seq_len]
-            return {"input_ids": chunk[:-1], "labels": chunk[1:], "task": "poetry"}
-        
+            return self._process_poetry(idx)
         else:
-            text, label = self.sentiments[idx % len(self.sentiments)]
-            tokens = self.tokenizer.encode(f"[CLS] {text} [SEP]")
-            return {"input_ids": tokens, "labels": label, "task": "sentiment"}
+            return self._process_sentiment(idx)
+
+    def _pad_sequence(self, tokens, max_len, pad_token):
+        padded = tokens[:max_len] + [pad_token] * (max_len - len(tokens))
+        mask = [1] * min(len(tokens), max_len) + [0] * (max_len - len(tokens))
+        return padded, mask
+
+    def _process_text(self, idx):
+        text = self.texts[idx % len(self.texts)]
+        tokens = self.tokenizer.encode(text).ids
+        tokens = tokens[:config.max_seq_len-1]  # جای برای EOS بگذار
+        tokens += [self.tokenizer.special_tokens["[EOS]"]]
+        input_ids, attention_mask = self._pad_sequence(tokens, config.max_seq_len, 
+                                                     self.tokenizer.special_tokens["[PAD]"])
+        return {
+            "input_ids": torch.tensor(input_ids[:-1]),
+            "labels": torch.tensor(input_ids[1:]),
+            "attention_mask": torch.tensor(attention_mask[:-1]),
+            "task": "text"
+        }
+
+    def _process_sentiment(self, idx):
+        # مثال داده‌های احساسات
+        text = "این فیلم واقعا عالی بود!" if idx % 2 else "خیلی بد بود!"
+        label = 2 if idx % 2 else 0
+        tokens = self.tokenizer.encode(f"[CLS] {text} [SEP]").ids
+        input_ids, attention_mask = self._pad_sequence(tokens, config.max_seq_len,
+                                                     self.tokenizer.special_tokens["[PAD]"])
+        return {
+            "input_ids": torch.tensor(input_ids),
+            "labels": torch.tensor(label),
+            "attention_mask": torch.tensor(attention_mask),
+            "task": "sentiment"
+        }
 
 # 4. معماری پیشرفته ترانسفورمر
 class DariushGPT(nn.Module):
@@ -170,16 +173,16 @@ class DariushGPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, std=0.02)
 
-    def forward(self, x, task="text"):
+    def forward(self, x, attention_mask=None, task="text"):
         B, T = x.size()
         
         # محاسبات پایه
         x = self.embedding(x) + self.pos_embed[:, :T]
         for layer in self.layers:
             if self.config.gradient_checkpointing and self.training:
-                x = torch.utils.checkpoint.checkpoint(layer, x)
+                x = torch.utils.checkpoint.checkpoint(layer, x, attention_mask)
             else:
-                x = layer(x)
+                x = layer(x, src_key_padding_mask=~attention_mask.bool() if attention_mask is not None else None)
         
         # انتخاب هد
         if task == "sentiment":
@@ -241,19 +244,20 @@ class DariushTrainer:
             
             for batch in pbar:
                 inputs = batch["input_ids"].to(config.device)
+                masks = batch["attention_mask"].to(config.device)
                 labels = batch["labels"].to(config.device)
                 task = batch["task"][0]
                 
                 self.optimizer.zero_grad()
                 
                 with autocast(enabled=config.use_amp):
-                    outputs = self.model(inputs, task)
+                    outputs = self.model(inputs, attention_mask=masks, task=task)
                     
                     if task == "sentiment":
                         loss = F.cross_entropy(outputs, labels)
                     else:
                         loss = F.cross_entropy(outputs.view(-1, config.vocab_size), 
-                                             labels.view(-1))
+                                             labels.view(-1), ignore_index=0)
                 
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
