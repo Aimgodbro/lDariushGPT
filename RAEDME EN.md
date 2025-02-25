@@ -28,3 +28,5 @@ print(poem)
 
 ## Contributing
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+---
+The model has been updated and now has the ability to solve basic math problems and perform reasoning.
