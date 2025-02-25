@@ -114,10 +114,27 @@ class PersianMultiTaskDataset(Dataset):
         input_ids, attention_mask = self._pad_sequence(tokens, config.max_seq_len, 
                                                      self.tokenizer.special_tokens["[PAD]"])
         return {
-            "input_ids": torch.tensor(input_ids[:-1]),
-            "labels": torch.tensor(input_ids[1:]),
-            "attention_mask": torch.tensor(attention_mask[:-1]),
+            "input_ids": torch.tensor(input_ids[:-1], device=config.device),
+            "labels": torch.tensor(input_ids[1:], device=config.device),
+            "attention_mask": torch.tensor(attention_mask[:-1], device=config.device),
             "task": "text"
+        }
+
+    def _process_poetry(self, idx):
+        # مثال داده‌های شعر (موقت)
+        poem = {
+            "text": "به نام خداوند جان و خرد",
+            "bahr": "hazaj",
+            "rhyme": "ar"
+        }
+        tokens = self.tokenizer.encode(f"[BAHR]{poem['bahr']} [RHYME]{poem['rhyme']} {poem['text']}").ids
+        input_ids, attention_mask = self._pad_sequence(tokens, config.max_seq_len, 
+                                                     self.tokenizer.special_tokens["[PAD]"])
+        return {
+            "input_ids": torch.tensor(input_ids[:-1], device=config.device),
+            "labels": torch.tensor(input_ids[1:], device=config.device),
+            "attention_mask": torch.tensor(attention_mask[:-1], device=config.device),
+            "task": "poetry"
         }
 
     def _process_sentiment(self, idx):
@@ -128,9 +145,9 @@ class PersianMultiTaskDataset(Dataset):
         input_ids, attention_mask = self._pad_sequence(tokens, config.max_seq_len,
                                                      self.tokenizer.special_tokens["[PAD]"])
         return {
-            "input_ids": torch.tensor(input_ids),
-            "labels": torch.tensor(label),
-            "attention_mask": torch.tensor(attention_mask),
+            "input_ids": torch.tensor(input_ids, device=config.device),
+            "labels": torch.tensor(label, device=config.device),
+            "attention_mask": torch.tensor(attention_mask, device=config.device),
             "task": "sentiment"
         }
 
@@ -163,7 +180,7 @@ class DariushGPT(nn.Module):
         
         # مقداردهی اولیه
         self.apply(self._init_weights)
-        nn.init.normal_(self.pos_embed, std=0.02)
+        nn.init.normal_(self.pos_embed, std=1.0 / (self.config.emb_size ** 0.5))
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -198,7 +215,8 @@ class DariushGPT(nn.Module):
             for _ in range(max_length):
                 inputs = torch.tensor([generated[-self.config.max_seq_len:]], 
                                     device=self.config.device)
-                logits = self(inputs)[0, -1]
+                attention_mask = torch.ones_like(inputs, device=self.config.device)
+                logits = self(inputs, attention_mask=attention_mask)[0, -1]
                 
                 # نمونه‌گیری کنترل شده
                 logits = logits / temperature
