@@ -1,0 +1,9 @@
+# تنظیمات محیط ابری (AWS/GCP)
+device: "cuda"
+use_amp: true
+batch_size: 64
+dataset_path: "gs://my-bucket/data"
+distributed:
+  backend: "nccl"
+  nodes: 4
+  gpus_per_node: 8
