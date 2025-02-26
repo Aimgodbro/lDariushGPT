@@ -1,0 +1,8 @@
+defaults:
+  - override /env: local  # انتخاب محیط پیش‌فرض
+  - /model/base           # تنظیمات مدل
+
+# پارامترهای اصلی
+task: "text_generation"
+seed: 42
+log_level: "INFO"
