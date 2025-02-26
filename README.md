@@ -168,7 +168,7 @@ dariush-gpt/
 
 **تماس فنی:**  
 📧 ایمیل: [hofa@dariush.ai](kinhofcod4242@gmail.com)  
-💬 تلگرام: [@dariush_support](https://t.me/dariush_support)  
+💬 تلگرام: [@dariush_support](https://t.me/hoseingnz)  
 
 **حامیان مالی:**  
 [![Shahid Beheshti University](https://i.imgur.com/7Q8K3hD.png)](https://www.sbu.ac.ir)  
