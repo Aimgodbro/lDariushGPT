@@ -1,0 +1,7 @@
+# تنظیمات معماری مدل
+emb_size: 1024
+num_heads: 16
+num_layers: 12
+hidden_size: 4096
+dropout: 0.1
+learning_rate: 3e-5
