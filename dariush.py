@@ -7,264 +7,202 @@ from tokenizers import Tokenizer, models, trainers, pre_tokenizers
 from datasets import load_dataset
 from tqdm import tqdm
 import random
+import faiss
+import numpy as np
+from xformers.ops import memory_efficient_attention
 
-# 1. پیکربندی پیشرفته
+# 1. پیکربندی پیشرفته با تنظیمات جدید
 class DariushConfig:
     def __init__(self):
-        # پارامترهای مدل
-        self.vocab_size = 30000
-        self.emb_size = 512
-        self.num_heads = 8
-        self.num_layers = 6
-        self.hidden_size = 2048
-        self.max_seq_len = 512
+        # پارامترهای اصلی
+        self.vocab_size = 50000
+        self.emb_size = 1024
+        self.num_heads = 16
+        self.num_layers = 12
+        self.hidden_size = 4096
+        self.max_seq_len = 2048
+        self.num_experts = 8  # برای MoE
         
         # تنظیمات آموزش
-        self.batch_size = 16
-        self.learning_rate = 3e-4
-        self.num_epochs = 10
+        self.batch_size = 32
+        self.learning_rate = 2e-5
+        self.num_epochs = 15
         self.dropout = 0.1
         
-        # بهینه‌سازی سخت‌افزار
-        self.device = self._detect_device()
+        # بهینه‌سازی
         self.use_amp = True
         self.gradient_checkpointing = True
+        self.device = self._detect_device()
         
         # توکن‌های ویژه
         self.special_tokens = {
             "[PAD]": 0, "[UNK]": 1, "[BOS]": 2, "[EOS]": 3,
-            "[ME]": 4, "[ENDLINE]": 5, "[RHYME]": 6, "[BAHR]": 7,
-            "[CLS]": 8, "[SEP]": 9, "[COT]": 10, "[TRANS]": 11
+            "[IMG]": 4, "[AUD]": 5, "[MEM]": 6, "[COT]": 7
         }
-        
+
     def _detect_device(self):
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            torch.mps.set_per_process_memory_fraction(0.85)
-            return torch.device("mps")
-        else:
-            return torch.device("cpu")
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 config = DariushConfig()
 
-# 2. توکنایزر پیشرفته
-class PersianTokenizer:
-    def __init__(self):
-        self.tokenizer = Tokenizer(models.BPE())
-        self.special_tokens = config.special_tokens
+# 2. معماری پیشرفته با قابلیت‌های جدید
+class RotaryPositionalEmbedding(nn.Module):
+    """پیاده‌سازی RoPE برای موقعیت‌یابی چرخشی"""
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+        self.inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
         
-    def train_from_hf(self, dataset_name="oscar", dataset_config="unshuffled_deduplicated_fa"):
-        try:
-            dataset = load_dataset(dataset_name, dataset_config)
-            text_iterator = (text for text in dataset["train"]["text"])
-            self._train(text_iterator)
-        except Exception as e:
-            raise RuntimeError(f"خطا در بارگیری دیتاست: {e}")
+    def forward(self, x):
+        seq_len = x.size(1)
+        t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return emb
 
-    def _train(self, text_iterator):
-        self.tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
-        trainer = trainers.BpeTrainer(
-            vocab_size=config.vocab_size,
-            special_tokens=list(self.special_tokens.keys()),
-            min_frequency=2
+class MoE(nn.Module):
+    """مکانیزم Mixture of Experts"""
+    def __init__(self, hidden_size, num_experts):
+        super().__init__()
+        self.experts = nn.ModuleList([
+            nn.Linear(hidden_size, hidden_size) for _ in range(num_experts)
+        ])
+        self.gate = nn.Linear(hidden_size, num_experts)
+        
+    def forward(self, x):
+        gates = torch.softmax(self.gate(x), dim=-1)
+        expert_outputs = torch.stack([e(x) for e in self.experts], dim=2)
+        return torch.einsum('bse,bes->bs', gates, expert_outputs)
+
+class EnhancedTransformerLayer(nn.Module):
+    """لایه ترنسفورمر پیشرفته با قابلیت‌های جدید"""
+    def __init__(self, config):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(
+            embed_dim=config.emb_size,
+            num_heads=config.num_heads,
+            dropout=config.dropout
         )
-        self.tokenizer.train_from_iterator(text_iterator, trainer=trainer)
+        self.moe = MoE(config.hidden_size, config.num_experts)
+        self.rotary_emb = RotaryPositionalEmbedding(config.emb_size)
         
-    def encode(self, text: str) -> list:
-        return self.tokenizer.encode(text).ids
+    def forward(self, x, attention_mask=None):
+        q = x + self.rotary_emb(x)
+        k = x + self.rotary_emb(x)
+        v = x
         
-    def decode(self, tokens: list) -> str:
-        return self.tokenizer.decode(tokens, skip_special_tokens=False)
-    
-    def get_vocab_size(self):
-        return self.tokenizer.get_vocab_size()
+        # FlashAttention
+        attn_output = memory_efficient_attention(
+            q, k, v,
+            attn_bias=attention_mask,
+            p=config.dropout
+        )
+        
+        # MoE
+        expert_output = self.moe(attn_output)
+        return expert_output
 
-# 3. دیتاست چندمنظوره (بدون تغییر)
-class PersianMultiTaskDataset(Dataset):
-    def __init__(self, tokenizer):
-        # Initialize the dataset with required parameters
-        self.tokenizer = tokenizer
-        self.tasks = ["text", "sentiment", "translation", "cot"]
-        self.data = []
-        
-        # Load datasets for each task
-        self.load_task_data("text", "path/to/text/data")
-        self.load_task_data("sentiment", "path/to/sentiment/data")
-        self.load_task_data("translation", "path/to/translation/data")
-        self.load_task_data("cot", "path/to/cot/data")
-        
-    def load_task_data(self, task, path):
-        # Load data for a specific task
-        with open(path, "r") as file:
-            for line in file:
-                self.data.append((task, line.strip()))
-    
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        task, text = self.data[idx]
-        tokens = self.tokenizer.encode(text)
-        return {
-            "tokens": torch.tensor(tokens, dtype=torch.long),
-            "task": task
-        }
-
-# 4. معماری پیشرفته با قابلیت‌های جدید
 class DariushGPT(nn.Module):
-    def __init__(self, config, tokenizer):
+    def __init__(self, config):
         super().__init__()
         self.config = config
-        self.tokenizer = tokenizer
         
         # لایه‌های اصلی
         self.embedding = nn.Embedding(config.vocab_size, config.emb_size)
-        self.pos_embed = nn.Parameter(torch.zeros(1, config.max_seq_len, config.emb_size))
-        
         self.layers = nn.ModuleList([
-            nn.TransformerEncoderLayer(
-                d_model=config.emb_size,
-                nhead=config.num_heads,
-                dim_feedforward=config.hidden_size,
-                dropout=config.dropout,
-                activation='gelu',
-                batch_first=True
-            ) for _ in range(config.num_layers)
+            EnhancedTransformerLayer(config) for _ in range(config.num_layers)
         ])
         
-        # هدهای تخصصی جدید
-        self.ln_f = nn.LayerNorm(config.emb_size)
-        self.text_head = nn.Linear(config.emb_size, config.vocab_size)
-        self.sentiment_head = nn.Linear(config.emb_size, 3)
-        self.translation_head = nn.Linear(config.emb_size, config.vocab_size)  # ترجمه
-        self.cot_head = nn.Linear(config.emb_size, config.vocab_size)  # Chain-of-Thought
+        # RAG
+        self.retriever = faiss.IndexFlatL2(config.emb_size)
+        self.memory = {}
         
-        # مقداردهی اولیه
-        self.apply(self._init_weights)
-        nn.init.normal_(self.pos_embed, std=1.0 / (self.config.emb_size ** 0.5))
-
-    def _init_weights(self, module):
-        # ... (همانند کد قبلی)
-
-    def forward(self, x, attention_mask=None, task="text"):
-        B, T = x.size()
+        # سیستم یادگیری تقویتی
+        self.reward_model = nn.Sequential(
+            nn.Linear(config.emb_size, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1)
+        )
         
-        # محاسبات پایه
-        x = self.embedding(x) + self.pos_embed[:, :T]
+        # سیستم چندوجهیتی
+        self.image_proj = nn.Linear(512, config.emb_size)  # برای CLIP
+        self.audio_proj = nn.Linear(256, config.emb_size)  # برای ASR
+        
+    def forward(self, x, attention_mask=None):
+        # بازیابی اطلاعات
+        if "[MEM]" in x:
+            mem_emb = self._retrieve_memory(x)
+            x = torch.cat([x, mem_emb], dim=1)
+            
+        # پردازش اصلی
+        x = self.embedding(x)
         for layer in self.layers:
-            if self.config.gradient_checkpointing and self.training:
-                x = torch.utils.checkpoint.checkpoint(layer, x, attention_mask)
-            else:
-                x = layer(x, src_key_padding_mask=~attention_mask.bool() if attention_mask is not None else None)
-        
-        # انتخاب هد بر اساس تسک
-        if task == "sentiment":
-            return self.sentiment_head(x[:, 0])
-        elif task == "translation":
-            return self.translation_head(self.ln_f(x))
-        elif task == "cot":
-            return self.cot_head(self.ln_f(x))
-        else:
-            return self.text_head(self.ln_f(x))
+            x = layer(x, attention_mask)
+        return x
     
-    # 5. تولید متن با قابلیت Chain-of-Thought
-    def generate_with_cot(self, prompt, max_length=100, temperature=0.7):
-        self.eval()
-        generated = prompt.copy()
-        cot_flag = False
-        
-        with torch.no_grad():
-            for _ in range(max_length):
-                inputs = torch.tensor([generated[-self.config.max_seq_len:]], 
-                                    device=self.config.device)
-                attention_mask = torch.ones_like(inputs, device=self.config.device)
-                
-                # تشخیص خودکار حالت CoT
-                if self.tokenizer.special_tokens["[COT]"] in generated:
-                    cot_flag = True
-                    logits = self(inputs, attention_mask=attention_mask, task="cot")[0, -1]
-                else:
-                    logits = self(inputs, attention_mask=attention_mask)[0, -1]
-                
-                # نمونه‌گیری
-                probs = F.softmax(logits / temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-                generated.append(next_token.item())
-                if next_token.item() == self.tokenizer.special_tokens["[EOS]"]:
-                    break
-        return generated
+    def _retrieve_memory(self, query):
+        """سیستم RAG"""
+        query_emb = self.embedding(query).mean(dim=1).detach().cpu().numpy()
+        _, indices = self.retriever.search(query_emb, 5)
+        return torch.stack([self.memory[i] for i in indices], dim=1)
     
-    # 6. ترجمه خودکار
-    def translate(self, text, max_length=100, temperature=0.7):
-        tokens = self.tokenizer.encode(f"[TRANS] {text}").ids
-        inputs = torch.tensor([tokens], device=self.config.device)
-        translated = []
+    def generate(self, prompt, max_length=100, strategy="contrastive"):
+        """تولید متن با استراتژی‌های پیشرفته"""
+        # ... (پیاده‌سازی Contrastive Decoding و Speculative Sampling)
         
-        with torch.no_grad():
-            for _ in range(max_length):
-                logits = self(inputs, task="translation")[0, -1]
-                probs = F.softmax(logits / temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-                if next_token.item() == self.tokenizer.special_tokens["[EOS]"]:
-                    break
-                translated.append(next_token.item())
-                inputs = torch.cat([inputs, next_token.unsqueeze(0)], dim=1)
+    def update_reward(self, responses, rewards):
+        """یادگیری تقویتی"""
+        # ... (پیاده‌سازی RLHF)
         
-        return self.tokenizer.decode(translated)
-
-# 7. سیستم آموزش پیشرفته با قابلیت‌های جدید
-class DariushTrainer:
-    def __init__(self, model, tokenizer):
+# 3. سیستم آموزش پیشرفته
+class AdvancedTrainer:
+    def __init__(self, model):
         self.model = model
-        self.tokenizer = tokenizer
-        self.optimizer = torch.optim.AdamW(model.parameters(), lr=model.config.learning_rate)
-        self.scaler = GradScaler(enabled=model.config.use_amp)
-        self.device = model.config.device
-        self.model.to(self.device)
+        self.scaler = GradScaler(enabled=config.use_amp)
+        self.optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
         
     def train(self, dataset):
-        dataloader = DataLoader(dataset, batch_size=self.model.config.batch_size, shuffle=True)
-        self.model.train()
+        # ... (پیاده‌سازی آموزش با DeepSpeed/FSDP)
         
-        for epoch in range(self.model.config.num_epochs):
-            for batch in tqdm(dataloader, desc=f"Training Epoch {epoch+1}/{self.model.config.num_epochs}"):
-                tokens = batch["tokens"].to(self.device)
-                task = batch["task"]
-                attention_mask = (tokens != self.tokenizer.special_tokens["[PAD]"]).to(self.device)
-                
-                with autocast(enabled=self.model.config.use_amp):
-                    outputs = self.model(tokens, attention_mask=attention_mask, task=task)
-                    # Compute the loss based on the task
-                    loss = self.compute_loss(outputs, tokens, task)
-                
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.optimizer.zero_grad()
-                
-    def compute_loss(self, outputs, targets, task):
-        if task == "sentiment":
-            return F.cross_entropy(outputs, targets)
-        else:
-            return F.cross_entropy(outputs.view(-1, self.model.config.vocab_size), targets.view(-1))
+    def dpo_update(self, preferred, rejected):
+        """بهینه‌سازی Direct Preference"""
+        # ... (پیاده‌سازی DPO)
 
-# اجرای اصلی
+# 4. سیستم چندوجهیتی
+class MultiModalProcessor:
+    def __init__(self):
+        self.clip = torch.jit.load('clip.pt')  # فرضی
+        self.asr = torch.jit.load('asr.pt')    # فرضی
+        
+    def process_image(self, image):
+        return self.clip(image)
+    
+    def process_audio(self, audio):
+        return self.asr(audio)
+
+# اجرای اصلی با قابلیت‌های جدید
 if __name__ == "__main__":
-    try:
-        tokenizer = PersianTokenizer()
-        tokenizer.train_from_hf()
-        config.vocab_size = tokenizer.get_vocab_size()
-        
-        dataset = PersianMultiTaskDataset(tokenizer)
-        model = DariushGPT(config, tokenizer)
-        trainer = DariushTrainer(model, tokenizer)
-        trainer.train(dataset)
-        
-    except Exception as e:
-        print(f"❌ خطای بحرانی: {e}")
-        exit(1)
+    # راه‌اندازی سیستم
+    model = DariushGPT(config)
+    trainer = AdvancedTrainer(model)
+    processor = MultiModalProcessor()
+    
+    # آموزش ترکیبی
+    text_data = PersianMultiTaskDataset()
+    image_data = load_image_dataset()
+    audio_data = load_audio_dataset()
+    
+    # آموزش چندوجهیتی
+    for epoch in range(config.num_epochs):
+        for batch in text_data:
+            trainer.train_step(batch)
+            
+        for img_batch in image_data:
+            img_emb = processor.process_image(img_batch)
+            model(img_emb)
+            
+        for audio_batch in audio_data:
+            audio_emb = processor.process_audio(audio_batch)
+            model(audio_emb)
 # Copyright (c) 2025 hosein davod abadi farahani
 # Licensed under the MIT License (https://opensource.org/licenses/MIT)
