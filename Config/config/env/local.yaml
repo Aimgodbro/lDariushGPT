@@ -1,0 +1,5 @@
+# تنظیمات محیط محلی
+device: "cpu"  # یا "mps" برای Mac
+use_amp: false
+batch_size: 8
+dataset_path: "./data/local"
