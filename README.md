@@ -3,7 +3,9 @@
 ---
 
 # **DariushGPT**  
-**نسخه پیشرفته مدل هوش مصنوعی فارسی با قابلیت‌های سازمانی**  
+**نسخه پیشرفته مدل هوش مصنوعی فارسی با قابلیت‌های سازمانی**
+ **[Apache 2.0](/LICENSE)** 
+[![Apache 2.0 License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)  
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-orange)  
 ![Hydra](https://img.shields.io/badge/Config-Hydra-89d8d3)  
