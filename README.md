@@ -167,7 +167,7 @@ dariush-gpt/
 ---
 
 **تماس فنی:**  
-📧 ایمیل: [hofa@dariush.ai](mailto:hofa@dariush.ai)  
+📧 ایمیل: [hofa@dariush.ai](kinhofcod4242@gmail.com)  
 💬 تلگرام: [@dariush_support](https://t.me/dariush_support)  
 
 **حامیان مالی:**  
