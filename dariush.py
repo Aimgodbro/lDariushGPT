@@ -82,7 +82,34 @@ class PersianTokenizer:
 
 # 3. دیتاست چندمنظوره (بدون تغییر)
 class PersianMultiTaskDataset(Dataset):
-    # ... (همانند کد قبلی بدون تغییر)
+    def __init__(self, tokenizer):
+        # Initialize the dataset with required parameters
+        self.tokenizer = tokenizer
+        self.tasks = ["text", "sentiment", "translation", "cot"]
+        self.data = []
+        
+        # Load datasets for each task
+        self.load_task_data("text", "path/to/text/data")
+        self.load_task_data("sentiment", "path/to/sentiment/data")
+        self.load_task_data("translation", "path/to/translation/data")
+        self.load_task_data("cot", "path/to/cot/data")
+        
+    def load_task_data(self, task, path):
+        # Load data for a specific task
+        with open(path, "r") as file:
+            for line in file:
+                self.data.append((task, line.strip()))
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        task, text = self.data[idx]
+        tokens = self.tokenizer.encode(text)
+        return {
+            "tokens": torch.tensor(tokens, dtype=torch.long),
+            "task": task
+        }
 
 # 4. معماری پیشرفته با قابلیت‌های جدید
 class DariushGPT(nn.Module):
@@ -190,7 +217,39 @@ class DariushGPT(nn.Module):
 
 # 7. سیستم آموزش پیشرفته با قابلیت‌های جدید
 class DariushTrainer:
-    # ... (همانند کد قبلی با افزودن تسک‌های جدید در آموزش)
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.optimizer = torch.optim.AdamW(model.parameters(), lr=model.config.learning_rate)
+        self.scaler = GradScaler(enabled=model.config.use_amp)
+        self.device = model.config.device
+        self.model.to(self.device)
+        
+    def train(self, dataset):
+        dataloader = DataLoader(dataset, batch_size=self.model.config.batch_size, shuffle=True)
+        self.model.train()
+        
+        for epoch in range(self.model.config.num_epochs):
+            for batch in tqdm(dataloader, desc=f"Training Epoch {epoch+1}/{self.model.config.num_epochs}"):
+                tokens = batch["tokens"].to(self.device)
+                task = batch["task"]
+                attention_mask = (tokens != self.tokenizer.special_tokens["[PAD]"]).to(self.device)
+                
+                with autocast(enabled=self.model.config.use_amp):
+                    outputs = self.model(tokens, attention_mask=attention_mask, task=task)
+                    # Compute the loss based on the task
+                    loss = self.compute_loss(outputs, tokens, task)
+                
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.optimizer.zero_grad()
+                
+    def compute_loss(self, outputs, targets, task):
+        if task == "sentiment":
+            return F.cross_entropy(outputs, targets)
+        else:
+            return F.cross_entropy(outputs.view(-1, self.model.config.vocab_size), targets.view(-1))
 
 # اجرای اصلی
 if __name__ == "__main__":
