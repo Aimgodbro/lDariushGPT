@@ -1,124 +1,126 @@
+
+
 ---
 
 # **DariushGPT**  
-**The Advanced Persian AI Model with Enterprise Capabilities**
+**نسخه پیشرفته مدل هوش مصنوعی فارسی با قابلیت‌های سازمانی**
 
 ---
-[![Apache 2.0 License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)  
+[![Apache 2.0 License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)  
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-orange)  
 ![Hydra](https://img.shields.io/badge/Config-Hydra-89d8d3)  
 
 ---
 
-## **Introduction**  
-**DariushGPT** is a comprehensive framework for Persian language processing with advanced enterprise capabilities. This system leverages the latest AI techniques such as **Mixture of Experts (MoE)**, **Rotary Attention**, and **Retrieval-Augmented Generation (RAG)**, and is optimized with a Hydra-based configuration management system for handling complex configurations.
+## **معرفی**  
+**DariushGPT** یک چارچوب جامع برای پردازش زبان فارسی با قابلیت‌های پیشرفته سازمانی است. این سیستم از آخرین تکنیک‌های هوش مصنوعی مانند **MoE**، **Rotary Attention** و **Retrieval-Augmented Generation** استفاده می‌کند و با معماری مبتنی بر **Hydra** برای مدیریت پیکربندی‌های پیچیده بهینه‌سازی شده است.
 
 ---
 
-## **Key Features** (Enhanced)
+## **ویژگی‌های کلیدی** (بهبود یافته)
 
-### **🧠 Advanced Architecture**  
-- **MoE System with Top-K Gating**  
-  - Dynamic selection among 8 specialized experts  
-  - Reduces computational resource usage by 40%
+### **🧠 معماری پیشرفته**  
+- **سیستم MoE با Top-K Gating**  
+  - انتخاب پویا بین ۸ متخصص تخصصی  
+  - کاهش ۴۰٪ مصرف منابع محاسباتی  
 
 - **FlashAttention 2.0 + Sparse Attention**  
-  - Processes sequences up to 8192 tokens  
-  - Achieves training speeds 2.3× faster
+  - پردازش توالی‌های تا ۸۱۹۲ توکن  
+  - سرعت آموزش ۲.۳ برابر سریع‌تر  
 
 - **Retrieval-Augmented Generation (RAG)**  
-  - Integrated with FAISS for accessing over 100GB of external knowledge
+  - یکپارچه با FAISS برای دسترسی به ۱۰۰GB دانش خارجی  
 
-### **⚙️ Enterprise Capabilities**  
-- **Configuration Management with Hydra**  
+### **⚙️ قابلیت‌های سازمانی**  
+- **مدیریت پیکربندی با Hydra**  
   ```bash
   python train.py model=large data=multimodal training=fp16
   ```
 
-- **Comprehensive MLOps with MLflow**  
-  - Automatically tracks 50+ metrics  
-  - Automatic versioning of models and datasets
+- **MLOps کامل با MLflow**  
+  - رهگیری خودکار ۵۰+ متریک  
+  - نسخه‌بندی خودکار مدل‌ها و دیتاست‌ها  
 
-- **Deployment Support**  
-  - ONNX export with TensorRT optimization  
-  - FastAPI server API with auto-scaling capability
+- **پشتیبانی از Deployment**  
+  - خروجی ONNX با TensorRT Optimization  
+  - API سرور FastAPI با قابلیت Scale خودکار  
 
-### **📊 Advanced Evaluation**  
-- **Comprehensive Persian Evaluation Suite**  
+### **📊 ارزیابی پیشرفته**  
+- **سوییت جامع ارزیابی فارسی**  
   - Rouge-Fa, BERTScore-Fa, BLEURT-Fa  
-  - Evaluation of prosody and rhyme for poetry
+  - تحلیل وزن عروضی و قافیه برای شعر  
 
-- **Custom Benchmarks**  
+- **بنچمارک‌های سفارشی**  
   ```python
   bench = PersianBenchmark()
   bench.evaluate(model, tasks=['text_gen', 'poetry', 'sentiment'])
   ```
 
-### **🔄 Intelligent Pipeline**  
-- **Automatic Data Versioning**  
+### **🔄 Pipeline هوشمند**  
+- **Data Versioning خودکار**  
   ```python
   dataset.save_to_disk(f"data/v1-{datetime.now()}")
   ```
 
-- **Persian Data Augmentation**  
-  - Advanced synonym replacement  
-  - Back-translation-based text generation
+- **Data Augmentation فارسی**  
+  - مترادف‌یابی پیشرفته  
+  - تولید متن مبتنی بر Back Translation  
 
 ---
 
-## **Datasets List** (Enhanced)
+## **لیست دیتاست‌ها** (بهبود یافته)
 
-| Dataset Name          | Size   | Link                                                                    | Special Features                                  |
-|-----------------------|--------|-------------------------------------------------------------------------|---------------------------------------------------|
-| **OSCAR-Fa**          | 80GB   | [Link](https://huggingface.co/datasets/oscar)                           | General text + inappropriate content filtering    |
-| **PersianPoetry-Pro** | 2GB    | [Link](https://github.com/persian-poetry/persian-poetry)                  | 1M verses of poetry with complete metadata         |
-| **Peykare-NER**       | 1.5GB  | [Link](https://srbiau.ac.ir/peykare)                                      | Named Entity Recognition labels                    |
-| **SnappFood-Reviews** | 500MB  | [Link](https://snappfood.ir/open-data)                                  | 500K user reviews with ratings (1-5)                 |
-
----
-
-## **Related Projects** (Enhanced)
-
-### **📚 Core Libraries**
-- **Hydra** – Advanced configuration management  
-- **MLflow** – ML experiment tracking  
-- **ONNX Runtime** – Optimized deployment  
-
-### **🧩 Specialized Modules**
-- **PersianAug** – Persian data augmentation  
-- **XFormers** – Optimized attention mechanisms  
-- **Faiss** – Information retrieval
+| نام دیتاست | حجم | لینک | ویژگی‌های خاص |
+|------------|------|------|----------------|
+| **OSCAR-Fa** | 80GB | [لینک](https://huggingface.co/datasets/oscar) | متن عمومی + فیلتر محتوای نامناسب |
+| **PersianPoetry-Pro** | 2GB | [لینک](https://github.com/persian-poetry/persian-poetry) | ۱M بیت شعر با متادیتای کامل |
+| **Peykare-NER** | 1.5GB | [لینک](https://srbiau.ac.ir/peykare) | برچسب‌گذاری Named Entities |
+| **SnappFood-Reviews** | 500MB | [لینک](https://snappfood.ir/open-data) | ۵۰۰K نظر کاربران با امتیاز ۱-۵ |
 
 ---
 
-## **Installation and Setup** (Enhanced)
+## **پروژه‌های مرتبط** (بهبود یافته)
 
-### **Prerequisites**
-- NVIDIA GPU with at least 24GB VRAM  
+### **📚 کتابخانه‌های اصلی**
+- **Hydra** - مدیریت پیکربندی پیشرفته  
+- **MLflow** - رهگیری آزمایش‌های ML  
+- **ONNX Runtime** - استقرار بهینه  
+
+### **🧩 ماژول‌های تخصصی**
+- **PersianAug** - افزایش داده فارسی  
+- **XFormers** - توجه بهینه‌شده  
+- **Faiss** - بازیابی اطلاعات  
+
+---
+
+## **نصب و راه‌اندازی** (بهبود یافته)
+
+### **پیش‌نیازها**
+- NVIDIA GPU با حداقل 24GB VRAM  
 - CUDA 12.1+  
 
-### **Installation Steps**
-1. Install dependencies:
+### **مراحل نصب**
+1. نصب وابستگی‌ها:
    ```bash
    pip install -r requirements.txt
    ```
 
-2. Initialize Hydra configuration:
+2. تنظیمات اولیه Hydra:
    ```bash
    python src/main.py --config-dir=configs --config-name=base
    ```
 
-3. Train the model:
+3. آموزش مدل:
    ```bash
    python train.py model=large data=oscar training=deepspeed
    ```
 
 ---
 
-## **Usage Examples** (Enhanced)
+## **مثال‌های کاربردی** (بهبود یافته)
 
-### **1. Configuration Management with Hydra**
+### **۱. مدیریت پیکربندی با Hydra**
 ```python
 @hydra.main(config_path="configs", config_name="multimodal")
 def train(cfg):
@@ -126,10 +128,10 @@ def train(cfg):
     trainer = AdvancedTrainer(cfg.training)
 ```
 
-### **2. Monitoring with MLflow**
+### **۲. مانیتورینگ با MLflow**
 ![MLflow Dashboard](https://i.imgur.com/5X8jK9L.png)
 
-### **3. Deployment with ONNX**
+### **۳. استقرار با ONNX**
 ```python
 onnx_config = {
     "optimization_level": 3,
@@ -138,21 +140,22 @@ onnx_config = {
 model.export("dariush.onnx", **onnx_config)
 ```
 
----
-
-## **License and Collaboration**  
-This project is released under the **Apache 2.0 License**. For contributions, please refer to the [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-**Technical Contact:**  
-📧 Email: kinhofcod4242@gmail.com  
-💬 Telegram: [@dariush_support](https://t.me/hoseingnz)
+## **مجوز و همکاری**  
+این پروژه تحت مجوز **Apache 2.0** منتشر شده است. برای مشارکت، [دستورالعمل همکاری](CONTRIBUTING.md) را مطالعه کنید.
 
-**Sponsors:**  
+---
+
+**تماس فنی:**  
+📧 ایمیل:kinhofcod4242@gmail.com
+💬 تلگرام: [@dariush_support](https://t.me/hoseingnz)  
+
+**حامیان مالی:**  
 [![Shahid Beheshti University](https://i.imgur.com/7Q8K3hD.png)](https://www.sbu.ac.ir)  
-[![AI Research Lab](https://i.imgur.com/5X9jZ2L.png)](https://airg.ir)
+[![AI Research Lab](https://i.imgur.com/5X9jZ2L.png)](https://airg.ir)  
 
----
+--- 
 
-**With DariushGPT, push the boundaries of Persian language processing!** 🚀
+**با DariushGPT، مرزهای پردازش زبان فارسی را جابجا کنید!** 🚀                    
