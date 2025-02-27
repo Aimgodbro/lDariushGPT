@@ -1,4 +1,4 @@
-### **README.md** (نسخه بهبود یافته با ویژگی‌های جدید)
+
 
 ---
 
@@ -149,7 +149,7 @@ model.export("dariush.onnx", **onnx_config)
 ---
 
 **تماس فنی:**  
-📧 ایمیل: [hofa@dariush.ai](kinhofcod4242@gmail.com)  
+📧 ایمیل:kinhofcod4242@gmail.com
 💬 تلگرام: [@dariush_support](https://t.me/hoseingnz)  
 
 **حامیان مالی:**  
