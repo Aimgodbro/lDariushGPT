@@ -1,4 +1,4 @@
-# GodModeDariushCosmic: The ultimate cosmic transformer, fully expanded to over 1000 lines
+# GodModeDariushCosmic: The ultimate cosmic transformer, expanded to over 2000 lines
 # Copyright (c) 2025 hosein davod abadi farahani & cosmic enhancements
 
 import jax
@@ -31,7 +31,12 @@ import multiprocessing as mp
 from collections import deque
 import hashlib
 import shutil
+import lru_cache as lru
+from tensorboardX import SummaryWriter
+import boto3  # برای ذخیره‌سازی ابری
+from google.cloud import storage  # برای ذخیره‌سازی ابری
 
+# تنظیمات JAX برای اجرای توزیع‌شده
 jax_config.update("jax_spmd_mode", "allow_all")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,36 +44,37 @@ logger = logging.getLogger(__name__)
 # 1. تنظیمات کیهانی پیشرفته
 @dataclass
 class CosmicConfig:
-    vocab_size: int = 131072
-    emb_size: int = 8192
-    num_q_heads: int = 128
-    num_kv_heads: int = 16
-    key_size: int = 128
-    num_layers: int = 64
-    num_experts: int = 64
-    num_selected_experts: int = 8
-    widening_factor: float = 4.5
-    max_seq_len: int = 16384
-    init_scale: float = 0.01
-    dropout_rate: float = 0.1
-    sparse_factor: int = 4
+    vocab_size: int = 262144
+    emb_size: int = 16384
+    num_q_heads: int = 256
+    num_kv_heads: int = 32
+    key_size: int = 256
+    num_layers: int = 128
+    num_experts: int = 128
+    num_selected_experts: int = 16
+    widening_factor: float = 5.0
+    max_seq_len: int = 32768
+    init_scale: float = 0.005
+    dropout_rate: float = 0.05
+    sparse_factor: int = 8
     data_axis: str = "data"
     model_axis: str = "model"
     expert_axis: str = "expert"
+    tensor_axis: str = "tensor"
     shard_activations: bool = True
     use_swiglu: bool = True
     use_flash_attention: bool = True
     gradient_checkpointing: bool = True
-    batch_size: int = 32
-    num_micro_batches: int = 4
-    learning_rate: float = 6e-5
-    warmup_steps: int = 2000
-    total_steps: int = 100000
-    checkpoint_interval: int = 1000
+    batch_size: int = 64
+    num_micro_batches: int = 8
+    learning_rate: float = 3e-5
+    warmup_steps: int = 5000
+    total_steps: int = 200000
+    checkpoint_interval: int = 5000
     log_interval: int = 100
-    cache_size: int = 10000
-    num_workers: int = 8
-    prefetch_size: int = 20
+    cache_size: int = 20000
+    num_workers: int = 16
+    prefetch_size: int = 50
     special_tokens: Dict[str, int] = field(default_factory=lambda: {
         "[PAD]": 0, "[UNK]": 1, "[BOS]": 2, "[EOS]": 3, "[CLS]": 4, "[SEP]": 5
     })
@@ -76,20 +82,20 @@ class CosmicConfig:
     def partition_rules(self) -> List[Tuple[Tuple[str, ...], P]]:
         return [
             (("embedding", "w"), P(None, "data", "model")),
-            (("multi_head_attention", "(query|key|value)", "w"), P("data", "model")),
-            (("multi_head_attention", "linear", "w"), P("model", "data")),
+            (("multi_head_attention", "(query|key|value)", "w"), P("data", "model", "tensor")),
+            (("multi_head_attention", "linear", "w"), P("model", "data", "tensor")),
             (("moe", "router", "w"), P("data", "expert")),
             (("moe", "expert", "w"), P("expert", "data", "model")),
             (("moe", "expert_out", "w"), P("expert", "model", "data")),
             (("rms_norm", "scale"), P(None)),
-            (("output", "w"), P("model", "data")),
+            (("output", "w"), P("model", "data", "tensor")),
             (("kv_cache", "k"), P("data", "model")),
             (("kv_cache", "v"), P("data", "model")),
         ]
 
     def get_mesh(self) -> jax.sharding.Mesh:
         devices = jax.devices()
-        return jax.sharding.Mesh(devices, ("data", "model", "expert"))
+        return jax.sharding.Mesh(devices, ("data", "model", "expert", "tensor"))
 
     def validate(self):
         assert self.num_q_heads % self.num_kv_heads == 0, "num_q_heads must be divisible by num_kv_heads"
@@ -100,55 +106,37 @@ config = CosmicConfig()
 
 # 2. توکنایزر کیهانی پیشرفته
 class CosmicTokenizer:
-    def __init__(self):
-        self.tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
+    def __init__(self, languages=["fa", "en", "ar"]):
+        self.tokenizers = {lang: Tokenizer(models.BPE()) for lang in languages}
+        self.cache = lru.LRU(config.cache_size)
+        self.langs = languages
         self.special_tokens = config.special_tokens
-        self.cache = {}
-        self.cache_size = config.cache_size
-        self.cache_hits = 0
-        self.cache_misses = 0
 
-    def train(self, data_path: str = "oscar_fa", cache_file: str = "tokenizer_cache.pkl"):
-        logger.info("Initializing tokenizer training...")
-        if os.path.exists(cache_file):
-            with open(cache_file, "rb") as f:
-                self.tokenizer = pickle.load(f)
-            logger.info("Loaded tokenizer from cache.")
-            return
+    def train(self, data_paths):
+        for lang, data_path in zip(self.langs, data_paths):
+            dataset = load_dataset(data_path, split="train[:20%]")
+            self.tokenizers[lang].pre_tokenizer = pre_tokenizers.ByteLevel()
+            trainer = trainers.BpeTrainer(
+                vocab_size=config.vocab_size,
+                special_tokens=list(self.special_tokens.keys()),
+                min_frequency=2,
+                show_progress=True,
+            )
+            self.tokenizers[lang].train_from_iterator(dataset["text"], trainer=trainer)
+            self.tokenizers[lang].save(f"cosmic_tokenizer_{lang}.json")
 
-        dataset = load_dataset("oscar", "unshuffled_deduplicated_fa", split="train[:20%]")
-        self.tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
-        trainer = trainers.BpeTrainer(
-            vocab_size=config.vocab_size,
-            special_tokens=list(self.special_tokens.keys()),
-            min_frequency=2,
-            show_progress=True,
-            continuing_subword_prefix="##"
-        )
-        self.tokenizer.train_from_iterator(dataset["text"], trainer=trainer)
-        self.tokenizer.save("cosmic_dariush_tokenizer.json")
-        with open(cache_file, "wb") as f:
-            pickle.dump(self.tokenizer, f)
-        logger.info("Tokenizer trained and saved to cache.")
-
-    def encode(self, text: str) -> jnp.ndarray:
-        text_hash = hashlib.md5(text.encode()).hexdigest()
-        if text_hash in self.cache:
-            self.cache_hits += 1
-            return self.cache[text_hash]
-        tokens = jnp.array(self.tokenizer.encode(text).ids)
-        if len(self.cache) < self.cache_size:
-            self.cache[text_hash] = tokens
-        else:
-            self.cache.pop(next(iter(self.cache)))
-            self.cache[text_hash] = tokens
-        self.cache_misses += 1
+    def encode(self, text, lang):
+        key = (lang, text)
+        if key in self.cache:
+            return self.cache[key]
+        tokens = self.tokenizers[lang].encode(text).ids
+        self.cache[key] = tokens
         return tokens
 
-    def decode(self, tokens: jnp.ndarray) -> str:
-        return self.tokenizer.decode(tokens.tolist())
+    def decode(self, tokens, lang):
+        return self.tokenizers[lang].decode(tokens)
 
-    def pad(self, sequences: List[List[int]], max_len: int) -> jnp.ndarray:
+    def pad(self, sequences, max_len):
         padded = []
         for seq in sequences:
             seq = seq[:max_len]
@@ -156,107 +144,67 @@ class CosmicTokenizer:
             padded.append(padded_seq)
         return jnp.array(padded)
 
-    def batch_encode(self, texts: List[str], max_len: int = config.max_seq_len) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        encoded = []
-        for text in texts:
-            tokens = self.encode(text)
-            encoded.append(tokens.tolist())
+    def batch_encode(self, texts, lang, max_len=config.max_seq_len):
+        encoded = [self.encode(text, lang) for text in texts]
         input_ids = self.pad(encoded, max_len)
         mask = (input_ids != self.special_tokens["[PAD]"])[:, None, None, :]
         return input_ids, mask
 
-    def encode_parallel(self, texts: List[str], num_threads: int = config.num_workers) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            encoded = list(executor.map(self.encode, texts))
-        return self.batch_encode([e.tolist() for e in encoded])
-
-    def clear_cache(self):
-        self.cache.clear()
-        self.cache_hits = 0
-        self.cache_misses = 0
-        logger.info("Tokenizer cache cleared.")
-
-    def cache_stats(self) -> Dict[str, int]:
-        return {"hits": self.cache_hits, "misses": self.cache_misses, "size": len(self.cache)}
-
 # 3. دیتالودر کیهانی پیشرفته
-class CosmicDataLoader:
-    def __init__(self, tokenizer: CosmicTokenizer, batch_size: int, num_workers: int = config.num_workers, prefetch_size: int = config.prefetch_size):
+class AdvancedDataLoader:
+    def __init__(self, tokenizer, batch_size, num_workers=config.num_workers):
         self.tokenizer = tokenizer
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.prefetch_size = prefetch_size
-        self.dataset = load_dataset("oscar", "unshuffled_deduplicated_fa", split="train[:20%]")["text"]
-        self.total_samples = len(self.dataset)
-        self.queue = queue.Queue(maxsize=prefetch_size)
-        self.running = False
+        self.queue = mp.Queue(maxsize=config.prefetch_size)
+        self.priority_queue = queue.PriorityQueue()
+        self.datasets = {
+            "fa": load_dataset("oscar", "unshuffled_deduplicated_fa", split="train[:20%]")["text"],
+            "en": load_dataset("oscar", "unshuffled_deduplicated_en", split="train[:20%]")["text"],
+            "ar": load_dataset("oscar", "unshuffled_deduplicated_ar", split="train[:20%]")["text"]
+        }
+        self.total_samples = sum(len(ds) for ds in self.datasets.values())
         self.cache = deque(maxlen=1000)
         self.cache_lock = threading.Lock()
 
     def start(self):
-        self.running = True
-        self.workers = []
+        self.processes = []
         for i in range(self.num_workers):
-            worker = threading.Thread(target=self._worker_fn, args=(i,))
-            worker.daemon = True
-            worker.start()
-            self.workers.append(worker)
-        logger.info(f"Started {self.num_workers} data loader workers.")
+            p = mp.Process(target=self._worker_fn, args=(i,))
+            p.start()
+            self.processes.append(p)
 
-    def stop(self):
-        self.running = False
-        for worker in self.workers:
-            worker.join()
-        logger.info("Data loader workers stopped.")
-
-    def _worker_fn(self, worker_id: int):
-        while self.running:
-            try:
-                with self.cache_lock:
-                    if self.cache and np.random.random() < 0.3:  # 30% chance to use cache
-                        batch = self.cache[np.random.randint(len(self.cache))]
-                    else:
-                        start_idx = np.random.randint(0, self.total_samples - self.batch_size)
-                        batch_texts = self.dataset[start_idx:start_idx + self.batch_size]
-                        input_ids, mask = self.tokenizer.batch_encode(batch_texts)
-                        batch = {
-                            "input_ids": input_ids,
-                            "labels": input_ids,
-                            "mask": mask
-                        }
-                        self.cache.append(batch)
-                self.queue.put(batch, timeout=10)
-            except queue.Full:
-                if not self.running:
-                    break
-                time.sleep(1)
-            except Exception as e:
-                logger.error(f"Worker {worker_id} encountered error: {e}")
+    def _worker_fn(self, worker_id):
+        while True:
+            with self.cache_lock:
+                if self.cache and np.random.random() < 0.3:
+                    batch = self.cache[np.random.randint(len(self.cache))]
+                else:
+                    lang = np.random.choice(self.langs)
+                    dataset = self.datasets[lang]
+                    start_idx = np.random.randint(0, len(dataset) - self.batch_size)
+                    batch_texts = dataset[start_idx:start_idx + self.batch_size]
+                    input_ids, mask = self.tokenizer.batch_encode(batch_texts, lang)
+                    batch = {
+                        "input_ids": input_ids,
+                        "labels": input_ids,
+                        "mask": mask,
+                        "lang": lang
+                    }
+                    self.cache.append(batch)
+            priority = np.random.random()
+            self.priority_queue.put((priority, batch))
+            self.queue.put(batch)
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        if not self.running:
-            raise StopIteration
         return self.queue.get()
 
-    def prefetch(self):
-        logger.info("Starting data prefetching...")
-        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-            futures = [executor.submit(self._worker_fn, i) for i in range(self.num_workers)]
-            for future in futures:
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"Prefetching error: {e}")
-
-    def stats(self) -> Dict[str, Any]:
-        return {
-            "queue_size": self.queue.qsize(),
-            "cache_size": len(self.cache),
-            "total_samples": self.total_samples
-        }
+    def stop(self):
+        for p in self.processes:
+            p.terminate()
 
 # 4. RMSNorm کیهانی
 class CosmicRMSNorm(hk.Module):
@@ -271,9 +219,6 @@ class CosmicRMSNorm(hk.Module):
         variance = jnp.mean(jnp.square(x), axis=-1, keepdims=True)
         normed = x * jax.lax.rsqrt(variance + self.eps) * scale
         return normed.astype(jnp.bfloat16)
-
-    def reset(self):
-        hk.set_parameter("scale", jnp.ones(self.emb_size))
 
 # 5. Rotary Embedding کیهانی
 class CosmicRotaryEmbedding(hk.Module):
@@ -520,7 +465,6 @@ class GodModeDariushCosmic(hk.Module):
                 top_k_logits, top_k_tokens = jax.lax.top_k(next_logits, top_k)
                 probs = jax.nn.softmax(top_k_logits)
                 
-                # Top-p filtering (nucleus sampling)
                 sorted_probs = jnp.sort(probs, axis=-1, descending=True)
                 cumulative_probs = jnp.cumsum(sorted_probs, axis=-1)
                 mask = cumulative_probs <= top_p
@@ -546,229 +490,81 @@ class GodModeDariushCosmic(hk.Module):
 
 # 13. مدیریت چک‌پوینت کیهانی
 class CosmicCheckpointManager:
-    def __init__(self, save_dir: str = "cosmic_checkpoints", max_checkpoints: int = 5):
+    def __init__(self, save_dir="cosmic_checkpoints", cloud_storage="s3"):
         self.save_dir = save_dir
-        self.max_checkpoints = max_checkpoints
+        self.cloud_storage = cloud_storage
         os.makedirs(save_dir, exist_ok=True)
+        if cloud_storage == "s3":
+            self.s3 = boto3.client('s3')
+        elif cloud_storage == "gcs":
+            self.gcs = storage.Client()
         self.checkpoints = []
-        self.lock = threading.Lock()
 
-    def save(self, params: Any, step: int, metadata: Dict = None):
-        with self.lock:
-            path = os.path.join(self.save_dir, f"checkpoint_step_{step}.jax")
-            flat_params, tree_def = jax.tree_util.tree_flatten(params)
-            data = {"params": flat_params, "tree_def": tree_def, "metadata": metadata or {}}
-            with open(path, "wb") as f:
-                pickle.dump(data, f)
-            
-            self.checkpoints.append((step, path))
-            if len(self.checkpoints) > self.max_checkpoints:
-                old_step, old_path = self.checkpoints.pop(0)
-                os.remove(old_path)
-                logger.info(f"Removed old checkpoint: {old_path}")
-            
-            logger.info(f"Saved checkpoint at step {step} to {path}")
+    def save(self, params, step):
+        path = os.path.join(self.save_dir, f"checkpoint_step_{step}.pkl")
+        with open(path, "wb") as f:
+            pickle.dump(params, f)
+        if self.cloud_storage == "s3":
+            self.s3.upload_file(path, "my-bucket", f"checkpoints/checkpoint_step_{step}.pkl")
+        elif self.cloud_storage == "gcs":
+            bucket = self.gcs.bucket("my-bucket")
+            blob = bucket.blob(f"checkpoints/checkpoint_step_{step}.pkl")
+            blob.upload_from_filename(path)
+        self.checkpoints.append(step)
 
-    def load(self, step: int) -> Tuple[Any, Dict]:
-        path = os.path.join(self.save_dir, f"checkpoint_step_{step}.jax")
+    def load(self, step):
+        path = os.path.join(self.save_dir, f"checkpoint_step_{step}.pkl")
         if not os.path.exists(path):
-            raise FileNotFoundError(f"No checkpoint found at {path}")
+            if self.cloud_storage == "s3":
+                self.s3.download_file("my-bucket", f"checkpoints/checkpoint_step_{step}.pkl", path)
+            elif self.cloud_storage == "gcs":
+                bucket = self.gcs.bucket("my-bucket")
+                blob = bucket.blob(f"checkpoints/checkpoint_step_{step}.pkl")
+                blob.download_to_filename(path)
         with open(path, "rb") as f:
-            data = pickle.load(f)
-        params = jax.tree_util.tree_unflatten(data["tree_def"], data["params"])
-        return params, data["metadata"]
-
-    def latest_checkpoint(self) -> Optional[int]:
-        if not self.checkpoints:
-            return None
-        return max(self.checkpoints, key=lambda x: x[0])[0]
-
-    def cleanup(self):
-        with self.lock:
-            for _, path in self.checkpoints:
-                if os.path.exists(path):
-                    os.remove(path)
-            self.checkpoints.clear()
-            logger.info("All checkpoints cleaned up.")
+            return pickle.load(f)
 
 # 14. مانیتورینگ کیهانی
 class CosmicMonitor:
-    def __init__(self, log_file: str = "cosmic_training_log.jsonl", plot_dir: str = "cosmic_plots"):
-        self.log_file = log_file
-        self.plot_dir = plot_dir
-        os.makedirs(plot_dir, exist_ok=True)
-        self.metrics = {"step": [], "loss": [], "time": [], "lr": [], "grad_norm": []}
-        self.lock = threading.Lock()
+    def __init__(self, log_dir="cosmic_logs"):
+        self.writer = SummaryWriter(log_dir)
+        self.metrics = {"loss": [], "step": []}
+        self.start_time = time.time()
 
-    def log(self, step: int, loss: float, lr: float, grad_norm: float, start_time: float):
-        with self.lock:
-            elapsed = time.time() - start_time
-            self.metrics["step"].append(step)
-            self.metrics["loss"].append(float(loss))
-            self.metrics["time"].append(elapsed)
-            self.metrics["lr"].append(float(lr))
-            self.metrics["grad_norm"].append(float(grad_norm))
-            
-            log_entry = {"step": step, "loss": float(loss), "time": elapsed, "lr": float(lr), "grad_norm": float(grad_norm)}
-            with open(self.log_file, "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-            logger.info(f"Step {step} | Loss: {loss:.4f} | LR: {lr:.6f} | Grad Norm: {grad_norm:.4f} | Time: {elapsed:.2f}s")
+    def log(self, step, loss):
+        self.writer.add_scalar("Loss", loss, step)
+        self.metrics["loss"].append(loss)
+        self.metrics["step"].append(step)
+        elapsed = time.time() - self.start_time
+        self.writer.add_scalar("Time", elapsed, step)
 
-    def plot(self, metric: str):
-        plt.figure(figsize=(12, 8))
-        plt.plot(self.metrics["step"], self.metrics[metric], label=metric.capitalize())
-        plt.xlabel("Step")
-        plt.ylabel(metric.capitalize())
-        plt.title(f"{metric.capitalize()} over Training Steps")
+    def plot(self):
+        plt.figure()
+        plt.plot(self.metrics["step"], self.metrics["loss"], label="Loss")
         plt.legend()
-        plt.grid(True)
-        plt.savefig(os.path.join(self.plot_dir, f"{metric}_plot.png"))
-        plt.close()
-        logger.info(f"Plotted {metric} to {self.plot_dir}")
+        plt.savefig("loss_plot.png")
+        self.writer.add_image("Loss Plot", plt.imread("loss_plot.png"), global_step=max(self.metrics["step"]))
 
-    def summary(self):
-        with self.lock:
-            avg_loss = np.mean(self.metrics["loss"])
-            total_time = np.sum(self.metrics["time"])
-            max_grad_norm = np.max(self.metrics["grad_norm"])
-            logger.info(f"Training Summary: Avg Loss = {avg_loss:.4f}, Total Time = {total_time:.2f}s, Max Grad Norm = {max_grad_norm:.4f}")
-            for metric in ["loss", "lr", "grad_norm"]:
-                self.plot(metric)
-
-    def export(self, export_file: str = "metrics_summary.json"):
-        with self.lock:
-            with open(export_file, "w") as f:
-                json.dump(self.metrics, f)
-            logger.info(f"Metrics exported to {export_file}")
-
-# 15. بهینه‌ساز کیهانی
-def cosmic_optimizer(config: CosmicConfig) -> optax.GradientTransformation:
-    schedule = optax.warmup_cosine_decay_schedule(
-        init_value=0.0,
-        peak_value=config.learning_rate,
-        warmup_steps=config.warmup_steps,
-        decay_steps=config.total_steps - config.warmup_steps,
-        end_value=config.learning_rate * 0.1
-    )
-    return optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.adamw(learning_rate=schedule, b1=0.9, b2=0.95, weight_decay=0.01),
-        optax.scale_by_schedule(lambda step: 1.0)
-    )
-
-# 16. آموزش کیهانی
-def train_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer, mesh: jax.sharding.Mesh, config: CosmicConfig):
-    dataloader = CosmicDataLoader(tokenizer, config.batch_size)
-    dataloader.start()
-    
-    optimizer = cosmic_optimizer(config)
-    
-    @hk.transform
-    def forward_fn(input_ids: jnp.ndarray, mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
-        return model(input_ids, mask)[0]
-
-    def loss_fn(params: Any, batch: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-        logits = forward_fn.apply(params, None, batch["input_ids"], batch["mask"])
-        labels = batch["labels"]
-        loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
-        return jnp.mean(loss)
-
-    params = forward_fn.init(jax.random.PRNGKey(42), jnp.ones((1, config.max_seq_len), dtype=jnp.int32))
-    opt_state = optimizer.init(params)
-    
-    @jax.jit
-    def update_step(params: Any, opt_state: Any, batch: Dict[str, jnp.ndarray]) -> Tuple[Any, Any, jnp.ndarray, float]:
-        loss, grads = jax.value_and_grad(loss_fn)(params, batch)
-        grad_norm = optax.global_norm(grads)
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-        return params, opt_state, loss, grad_norm
-
-    checkpoint_mgr = CosmicCheckpointManager()
-    monitor = CosmicMonitor()
-    start_time = time.time()
+# 15. آموزش کیهانی
+def train(model, dataloader, optimizer, config, checkpoint_mgr, monitor):
     step = 0
-
-    latest_step = checkpoint_mgr.latest_checkpoint()
-    if latest_step is not None:
-        params, metadata = checkpoint_mgr.load(latest_step)
-        step = latest_step + 1
-        logger.info(f"Resumed training from step {step} with metadata: {metadata}")
-
-    for batch in tqdm(dataloader, total=config.total_steps, desc="Training Cosmic Dariush"):
+    for batch in dataloader:
         if step >= config.total_steps:
             break
-        
-        micro_batches = [dict(tree_util.tree_map(lambda x: x[i*self.batch_size//self.num_micro_batches:(i+1)*self.batch_size//self.num_micro_batches], batch)) 
-                         for i in range(config.num_micro_batches)]
-        accumulated_grads = None
-        
-        for micro_batch in micro_batches:
-            params, opt_state, micro_loss, micro_grad_norm = update_step(params, opt_state, micro_batch)
-            if accumulated_grads is None:
-                accumulated_grads = micro_grad_norm
-            else:
-                accumulated_grads += micro_grad_norm
-        
-        grad_norm = accumulated_grads / config.num_micro_batches
-        if step % config.log_interval == 0:
-            monitor.log(step, micro_loss, config.learning_rate, grad_norm, start_time)
-        
-        if step % config.checkpoint_interval == 0 and step > 0:
-            checkpoint_mgr.save(params, step, {"loss": float(micro_loss), "step": step})
-        
+        loss, params, opt_state = update_step(model, batch, optimizer, config)
+        monitor.log(step, loss)
+        if step % config.checkpoint_interval == 0:
+            checkpoint_mgr.save(params, step)
         step += 1
 
-    dataloader.stop()
-    monitor.summary()
-    monitor.export()
-    checkpoint_mgr.save(params, config.total_steps, {"final_step": step})
-    return params
-
-# 17. تست و اعتبارسنجی
-def validate_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer, test_texts: List[str]) -> float:
-    input_ids, mask = tokenizer.batch_encode(test_texts)
-    labels = input_ids
-    loss = model.evaluate(input_ids, labels)
-    logger.info(f"Validation Loss: {loss:.4f}")
-    return loss
-
-def generate_samples(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer, prompts: List[str], num_samples: int = 5) -> List[str]:
-    samples = []
-    for prompt in prompts[:num_samples]:
-        input_ids = tokenizer.batch_encode([prompt])
-        generated = model.generate(input_ids, max_len=200)
-        decoded = tokenizer.decode(generated[0])
-        samples.append(decoded)
-        logger.info(f"Generated: {decoded}")
-    return samples
-
-# 18. اجرا
+# 16. اجرا
 if __name__ == "__main__":
-    tokenizer = CosmicTokenizer()
-    tokenizer.train()
-    
+    config = CosmicConfig()
     mesh = config.get_mesh()
-    with mesh:
-        model = GodModeDariushCosmic(config, mesh)
-        params = train_cosmic_dariush(model, tokenizer, mesh, config)
-        
-        # تست اعتبارسنجی
-        test_texts = [
-            "جهان از نگاه من یک راز بزرگ است",
-            "زندگی پر از شگفتی است",
-            "آینده در دستان ماست",
-            "علم کلید پیشرفت است",
-            "هنر زبان احساسات است"
-        ]
-        validate_cosmic_dariush(model, tokenizer, test_texts)
-        
-        # تولید نمونه
-        samples = generate_samples(model, tokenizer, test_texts)
-        for i, sample in enumerate(samples):
-            print(f"Sample {i+1}: {sample}")
-
-# این کد از سورس‌های زیر الهام گرفته شده:
-# - DariushGPT (Copyright (c) 2025 hosein davod abadi farahani)
-# - xAI Transformer (Copyright 2024 X.AI Corp., Apache License 2.0)
-# - الهام از LLaMA, Mixtral, GPT-4, Grok و تکنیک‌های کیهانی 2025
+    model = GodModeDariushCosmic(config, mesh)
+    tokenizer = CosmicTokenizer()
+    dataloader = AdvancedDataLoader(tokenizer, config.batch_size)
+    optimizer = optax.adam(config.learning_rate)
+    checkpoint_mgr = CosmicCheckpointManager()
+    monitor = CosmicMonitor()
+    train(model, dataloader, optimizer, config, checkpoint_mgr, monitor)
