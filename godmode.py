@@ -1,4 +1,4 @@
-# GodModeDariushCosmic: The ultimate cosmic transformer
+# GodModeDariush: The ultimate transformer
 # Copyright (c) 2025 hosein davod abadi farahani 
 
 import jax
@@ -41,9 +41,9 @@ jax_config.update("jax_spmd_mode", "allow_all")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# 1. تنظیمات کیهانی پیشرفته
+# 1. تنظیمات پیشرفته
 @dataclass
-class CosmicConfig:
+class DariushConfig:
     # اندازه‌های اصلی مدل
     vocab_size: int = 262144
     emb_size: int = 16384
@@ -117,11 +117,11 @@ class CosmicConfig:
         assert self.batch_size % self.num_micro_batches == 0, "batch_size must be divisible by num_micro_batches"
         logger.info("Configuration validated successfully.")
 
-config = CosmicConfig()
+config = DariushConfig()
 config.validate()
 
-# 2. توکنایزر کیهانی پیشرفته
-class CosmicTokenizer:
+# 2. توکنایزر پیشرفته
+class DariushTokenizer:
     def __init__(self, languages: List[str] = ["fa", "en", "ar"]):
         """راه‌اندازی توکنایزر چندزبانه"""
         self.tokenizers: Dict[str, Tokenizer] = {lang: Tokenizer(models.BPE(unk_token="[UNK]")) for lang in languages}
@@ -148,8 +148,8 @@ class CosmicTokenizer:
             )
             tokenizer.train_from_iterator(dataset["text"], trainer=trainer)
             tokenizer.enable_padding(pad_id=self.special_tokens["[PAD]"], pad_token="[PAD]")
-            tokenizer.save(f"cosmic_tokenizer_{lang}.json")
-            logger.info(f"Tokenizer for {lang} saved to cosmic_tokenizer_{lang}.json")
+            tokenizer.save(f"dariush_tokenizer_{lang}.json")
+            logger.info(f"Tokenizer for {lang} saved to dariush_tokenizer_{lang}.json")
 
     def encode(self, text: str, lang: str) -> List[int]:
         """رمزگذاری متن برای زبان مشخص"""
@@ -183,7 +183,7 @@ class CosmicTokenizer:
         """رمزگذاری دسته‌ای متون"""
         encoded = [self.encode(text, lang) for text in texts]
         input_ids = self.pad(encoded, max_len)
-        mask = (input_ids != self.special_tokens["[PAD]"])[:, None, None, :]
+        mask = (input_ids != self.special_tokens["[PAD]"]).astype(jnp.float32)[:, None, None, :]
         return input_ids, mask
 
     def encode_parallel(self, texts: List[str], lang: str, num_threads: int = config.num_workers) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -202,9 +202,9 @@ class CosmicTokenizer:
         self.stats = {"hits": 0, "misses": 0}
         logger.info("Tokenizer cache cleared.")
 
-# 3. دیتالودر کیهانی پیشرفته
-class CosmicDataLoader:
-    def __init__(self, tokenizer: CosmicTokenizer, batch_size: int, datasets: Dict[str, List[str]], 
+# 3. دیتالودر پیشرفته
+class DariushDataLoader:
+    def __init__(self, tokenizer: DariushTokenizer, batch_size: int, datasets: Dict[str, List[str]], 
                  num_workers: int = config.num_workers, prefetch_size: int = config.prefetch_size):
         """راه‌اندازی دیتالودر چندزبانه"""
         self.tokenizer = tokenizer
@@ -303,8 +303,8 @@ class CosmicDataLoader:
             self.cache.clear()
         logger.info("Data loader cache cleared.")
 
-# 4. نرمال‌سازی RMS کیهانی
-class CosmicRMSNorm(hk.Module):
+# 4. نرمال‌سازی RMS پیشرفته
+class DariushRMSNorm(hk.Module):
     def __init__(self, emb_size: int, eps: float = 1e-6, name: str = "rms_norm"):
         """راه‌اندازی نرمال‌سازی RMS"""
         super().__init__(name=name)
@@ -324,15 +324,15 @@ class CosmicRMSNorm(hk.Module):
         hk.set_parameter("scale", jnp.ones(self.emb_size))
         logger.info(f"RMSNorm {self.name} reset.")
 
-# 5. تعبیه موقعیت چرخشی کیهانی
-class CosmicRotaryEmbedding(hk.Module):
+# 5. تعبیه موقعیت چرخشی پیشرفته
+class DariushRotaryEmbedding(hk.Module):
     def __init__(self, dim: int, base: int = 10000, max_seq_len: int = config.max_seq_len, name: str = "rotary_emb"):
         """راه‌اندازی تعبیه موقعیت چرخشی"""
         super().__init__(name=name)
         self.dim = dim
         self.base = base
         self.max_seq_len = max_seq_len
-        inv_freq = 1.0 / (base ** (jnp.arange(0, dim, 2, dtype=jnp.float32) / dim))
+        inv_freq = 1.0 / (base ** (jnp.arange(0, dim, 2, dtype=jnp.float32) / dim)
         self.register_buffer("inv_freq", inv_freq)
 
     def __call__(self, x: jnp.ndarray, offset: int = 0) -> jnp.ndarray:
@@ -346,8 +346,8 @@ class CosmicRotaryEmbedding(hk.Module):
         x_rot = jnp.concatenate([-x2, x1], axis=-1)
         return x * cos_val + x_rot * sin_val
 
-# 6. SwiGLU کیهانی
-class CosmicSwiGLU(hk.Module):
+# 6. SwiGLU پیشرفته
+class DariushSwiGLU(hk.Module):
     def __init__(self, hidden_size: int, name: str = "swiglu"):
         """راه‌اندازی فعال‌سازی SwiGLU"""
         super().__init__(name=name)
@@ -359,8 +359,8 @@ class CosmicSwiGLU(hk.Module):
         w2 = hk.Linear(self.hidden_size, name="w2", w_init=hk.initializers.TruncatedNormal(stddev=0.02))
         return jax.nn.silu(w1(x)) * w2(x)
 
-# 7. Flash Attention کیهانی
-class CosmicFlashAttention(hk.Module):
+# 7. Flash Attention پیشرفته
+class DariushFlashAttention(hk.Module):
     def __init__(self, num_heads: int, key_size: int, block_size: int = 128, name: str = "flash_attention"):
         """راه‌اندازی توجه سریع"""
         super().__init__(name=name)
@@ -398,8 +398,8 @@ class CosmicFlashAttention(hk.Module):
         outputs = jax.vmap(sharded_block_attention)(q_blocks, k_blocks, v_blocks, mask_blocks)
         return outputs.reshape(batch, seq_len, self.num_heads * self.key_size)
 
-# 8. توجه پراکنده کیهانی
-class CosmicSparseAttention(hk.Module):
+# 8. توجه پراکنده پیشرفته
+class DariushSparseAttention(hk.Module):
     def __init__(self, num_heads: int, key_size: int, sparse_factor: int = config.sparse_factor, name: str = "sparse_attention"):
         """راه‌اندازی توجه پراکنده"""
         super().__init__(name=name)
@@ -427,8 +427,8 @@ class CosmicSparseAttention(hk.Module):
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, v_sparse)
         return attn_output.reshape(batch, sparse_seq_len, self.num_heads * self.key_size)
 
-# 9. Mixture of Experts کیهانی
-class CosmicRouter(hk.Module):
+# 9. Mixture of Experts پیشرفته
+class DariushRouter(hk.Module):
     def __init__(self, num_experts: int, num_selected_experts: int, name: str = "router"):
         """راه‌اندازی روتر MoE"""
         super().__init__(name=name)
@@ -446,13 +446,13 @@ class CosmicRouter(hk.Module):
         gates, indices = jax.lax.top_k(probs, self.num_selected_experts)
         return gates, indices
 
-class CosmicMoELayer(hk.Module):
-    def __init__(self, config: CosmicConfig, mesh: jax.sharding.Mesh, name: str = "moe"):
+class DariushMoELayer(hk.Module):
+    def __init__(self, config: DariushConfig, mesh: jax.sharding.Mesh, name: str = "moe"):
         """راه‌اندازی لایه MoE"""
         super().__init__(name=name)
         self.config = config
         self.mesh = mesh
-        self.router = CosmicRouter(config.num_experts, config.num_selected_experts)
+        self.router = DariushRouter(config.num_experts, config.num_selected_experts)
 
     def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
         """اعمال لایه MoE"""
@@ -466,7 +466,7 @@ class CosmicMoELayer(hk.Module):
             w_out = hk.Linear(self.config.emb_size, name="expert_out",
                             w_init=hk.initializers.TruncatedNormal(stddev=0.02))
             if self.config.use_swiglu:
-                return w_out(CosmicSwiGLU(self.config.emb_size)(x))
+                return w_out(DariushSwiGLU(self.config.emb_size)(x))
             return w_out(jax.nn.gelu(w(x)))
 
         for _ in range(self.config.num_experts):
@@ -483,13 +483,13 @@ class CosmicMoELayer(hk.Module):
         selected_outputs = compute_expert_output(inputs, expert_outputs)
         return (selected_outputs * gates[..., None]).sum(axis=1)
 
-# 10. توجه چندسر کیهانی
-class CosmicMultiHeadAttention(hk.Module):
-    def __init__(self, config: CosmicConfig, name: str = "multi_head_attention"):
+# 10. توجه چندسر پیشرفته
+class DariushMultiHeadAttention(hk.Module):
+    def __init__(self, config: DariushConfig, name: str = "multi_head_attention"):
         """راه‌اندازی توجه چندسر"""
         super().__init__(name=name)
         self.config = config
-        self.rotary = CosmicRotaryEmbedding(config.key_size)
+        self.rotary = DariushRotaryEmbedding(config.key_size)
 
     def __call__(self, x: jnp.ndarray, mask: Optional[jnp.ndarray] = None, 
                  kv_cache: Optional[Dict] = None) -> Tuple[jnp.ndarray, Dict]:
@@ -515,26 +515,26 @@ class CosmicMultiHeadAttention(hk.Module):
             v = kv_cache["v"]
 
         if self.config.use_flash_attention:
-            flash_attn = CosmicFlashAttention(self.config.num_q_heads, self.config.key_size)
+            flash_attn = DariushFlashAttention(self.config.num_q_heads, self.config.key_size)
             attn_output = flash_attn(q, k, v, mask)
         else:
-            sparse_attn = CosmicSparseAttention(self.config.num_q_heads, self.config.key_size, self.config.sparse_factor)
+            sparse_attn = DariushSparseAttention(self.config.num_q_heads, self.config.key_size, self.config.sparse_factor)
             attn_output = sparse_attn(q, k, v, mask)
 
         return out_w(attn_output), {"k": k, "v": v}
 
-# 11. لایه کیهانی
-class CosmicDariushLayer(hk.Module):
-    def __init__(self, config: CosmicConfig, mesh: jax.sharding.Mesh, layer_idx: int, name: str = "cosmic_layer"):
+# 11. لایه پیشرفته
+class DariushLayer(hk.Module):
+    def __init__(self, config: DariushConfig, mesh: jax.sharding.Mesh, layer_idx: int, name: str = "dariush_layer"):
         """راه‌اندازی لایه ترانسفورمر"""
         super().__init__(name=f"{name}_{layer_idx}")
         self.config = config
         self.mesh = mesh
         self.layer_idx = layer_idx
-        self.attn = CosmicMultiHeadAttention(config)
-        self.moe = CosmicMoELayer(config, mesh)
-        self.norm1 = CosmicRMSNorm(config.emb_size)
-        self.norm2 = CosmicRMSNorm(config.emb_size)
+        self.attn = DariushMultiHeadAttention(config)
+        self.moe = DariushMoELayer(config, mesh)
+        self.norm1 = DariushRMSNorm(config.emb_size)
+        self.norm2 = DariushRMSNorm(config.emb_size)
         self.dropout = hk.dropout if config.dropout_rate > 0 else lambda x: x
 
     def __call__(self, x: jnp.ndarray, mask: Optional[jnp.ndarray] = None, 
@@ -549,17 +549,17 @@ class CosmicDariushLayer(hk.Module):
         x = x + self.dropout(moe_out, rate=self.config.dropout_rate, salt=jax.random.PRNGKey(self.layer_idx + 1))
         return x, new_cache
 
-# 12. مدل اصلی کیهانی
-class GodModeDariushCosmic(hk.Module):
-    def __init__(self, config: CosmicConfig, mesh: jax.sharding.Mesh, name: str = "godmode_dariush_cosmic"):
+# 12. مدل اصلی
+class GodModeDariush(hk.Module):
+    def __init__(self, config: DariushConfig, mesh: jax.sharding.Mesh, name: str = "godmode_dariush"):
         """راه‌اندازی مدل اصلی"""
         super().__init__(name=name)
         self.config = config
         self.mesh = mesh
         self.embedding = hk.Embed(config.vocab_size, config.emb_size, name="embedding",
                                  w_init=hk.initializers.TruncatedNormal(stddev=config.init_scale))
-        self.layers = [CosmicDariushLayer(config, mesh, i) for i in range(config.num_layers)]
-        self.norm = CosmicRMSNorm(config.emb_size)
+        self.layers = [DariushLayer(config, mesh, i) for i in range(config.num_layers)]
+        self.norm = DariushRMSNorm(config.emb_size)
         self.output = hk.Linear(config.vocab_size, name="output",
                                w_init=hk.initializers.TruncatedNormal(stddev=config.init_scale))
 
@@ -630,9 +630,9 @@ class GodModeDariushCosmic(hk.Module):
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
         return jnp.mean(loss)
 
-# 13. مدیریت چک‌پوینت کیهانی
-class CosmicCheckpointManager:
-    def __init__(self, save_dir: str = "cosmic_checkpoints", cloud_storage: str = "s3", max_checkpoints: int = 10):
+# 13. مدیریت چک‌پوینت پیشرفته
+class DariushCheckpointManager:
+    def __init__(self, save_dir: str = "dariush_checkpoints", cloud_storage: str = "s3", max_checkpoints: int = 10):
         """راه‌اندازی مدیریت چک‌پوینت"""
         self.save_dir = save_dir
         self.cloud_storage = cloud_storage
@@ -661,9 +661,9 @@ class CosmicCheckpointManager:
                 pickle.dump(checkpoint_data, f)
             
             if self.cloud_storage == "s3":
-                self.s3.upload_file(path, "cosmic-bucket", f"checkpoints/checkpoint_step_{step}.pkl")
+                self.s3.upload_file(path, "dariush-bucket", f"checkpoints/checkpoint_step_{step}.pkl")
             elif self.cloud_storage == "gcs":
-                bucket = self.gcs.bucket("cosmic-bucket")
+                bucket = self.gcs.bucket("dariush-bucket")
                 blob = bucket.blob(f"checkpoints/checkpoint_step_{step}.pkl")
                 blob.upload_from_filename(path)
             
@@ -679,9 +679,9 @@ class CosmicCheckpointManager:
             path = os.path.join(self.save_dir, f"checkpoint_step_{step}.pkl")
             if not os.path.exists(path):
                 if self.cloud_storage == "s3":
-                    self.s3.download_file("cosmic-bucket", f"checkpoints/checkpoint_step_{step}.pkl", path)
+                    self.s3.download_file("dariush-bucket", f"checkpoints/checkpoint_step_{step}.pkl", path)
                 elif self.cloud_storage == "gcs":
-                    bucket = self.gcs.bucket("cosmic-bucket")
+                    bucket = self.gcs.bucket("dariush-bucket")
                     blob = bucket.blob(f"checkpoints/checkpoint_step_{step}.pkl")
                     blob.download_to_filename(path)
             with open(path, "rb") as f:
@@ -703,9 +703,9 @@ class CosmicCheckpointManager:
             self.checkpoints.clear()
             logger.info("All checkpoints cleaned up.")
 
-# 14. مانیتورینگ کیهانی
-class CosmicMonitor:
-    def __init__(self, log_dir: str = "cosmic_logs"):
+# 14. مانیتورینگ پیشرفته
+class DariushMonitor:
+    def __init__(self, log_dir: str = "dariush_logs"):
         """راه‌اندازی مانیتورینگ با TensorBoard"""
         self.writer = SummaryWriter(log_dir)
         self.metrics = {
@@ -765,9 +765,9 @@ class CosmicMonitor:
                 self.plot(metric)
             self.save_metrics()
 
-# 15. بهینه‌ساز کیهانی
-class CosmicOptimizer:
-    def __init__(self, config: CosmicConfig):
+# 15. بهینه‌ساز پیشرفته
+class DariushOptimizer:
+    def __init__(self, config: DariushConfig):
         """راه‌اندازی بهینه‌ساز پیشرفته"""
         self.config = config
         self.schedule = optax.warmup_cosine_decay_schedule(
@@ -797,14 +797,14 @@ class CosmicOptimizer:
         """دریافت نرخ یادگیری برای گام مشخص"""
         return self.schedule(step)
 
-# 16. آموزش کیهانی
-def train_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer, mesh: jax.sharding.Mesh, 
-                         config: CosmicConfig, datasets: Dict[str, List[str]]):
-    """آموزش مدل کیهانی"""
-    dataloader = CosmicDataLoader(tokenizer, config.batch_size, datasets)
+# 16. آموزش پیشرفته
+def train_dariush(model: GodModeDariush, tokenizer: DariushTokenizer, mesh: jax.sharding.Mesh, 
+                         config: DariushConfig, datasets: Dict[str, List[str]]):
+    """آموزش مدل"""
+    dataloader = DariushDataLoader(tokenizer, config.batch_size, datasets)
     dataloader.start()
     
-    optimizer = CosmicOptimizer(config)
+    optimizer = DariushOptimizer(config)
     
     @hk.transform
     def forward_fn(input_ids: jnp.ndarray, mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
@@ -830,8 +830,8 @@ def train_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer
         new_params, new_opt_state = optimizer.update(grads, opt_state, params)
         return new_params, new_opt_state, loss, grad_norm
 
-    checkpoint_mgr = CosmicCheckpointManager()
-    monitor = CosmicMonitor()
+    checkpoint_mgr = DariushCheckpointManager()
+    monitor = DariushMonitor()
     step = 0
 
     latest_step = checkpoint_mgr.get_latest_checkpoint()
@@ -840,7 +840,7 @@ def train_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer
         step = latest_step + 1
         logger.info(f"Resumed training from step {step} with metadata: {metadata}")
 
-    for batch in tqdm(dataloader, total=config.total_steps, desc="Training Cosmic Dariush"):
+    for batch in tqdm(dataloader, total=config.total_steps, desc="Training Dariush"):
         if step >= config.total_steps:
             break
 
@@ -881,7 +881,7 @@ def train_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer
     return params
 
 # 17. تست و اعتبارسنجی
-def validate_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer, 
+def validate_dariush(model: GodModeDariush, tokenizer: DariushTokenizer, 
                             test_texts: List[str], lang: str) -> float:
     """اعتبارسنجی مدل"""
     input_ids, mask = tokenizer.batch_encode(test_texts, lang)
@@ -890,7 +890,7 @@ def validate_cosmic_dariush(model: GodModeDariushCosmic, tokenizer: CosmicTokeni
     logger.info(f"Validation Loss for {lang}: {loss:.4f}")
     return loss
 
-def generate_samples(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer, prompts: List[str], 
+def generate_dariush_samples(model: GodModeDariush, tokenizer: DariushTokenizer, prompts: List[str], 
                      lang: str, num_samples: int = 5) -> List[str]:
     """تولید نمونه‌های متنی"""
     samples = []
@@ -905,12 +905,12 @@ def generate_samples(model: GodModeDariushCosmic, tokenizer: CosmicTokenizer, pr
 # 18. اجرا
 if __name__ == "__main__":
     # تنظیمات اولیه
-    config = CosmicConfig()
+    config = DariushConfig()
     config.validate()
     mesh = config.get_mesh()
 
     # آماده‌سازی توکنایزر
-    tokenizer = CosmicTokenizer()
+    tokenizer = DariushTokenizer()
     data_paths = {
         "fa": "oscar_fa",
         "en": "oscar_en",
@@ -927,8 +927,8 @@ if __name__ == "__main__":
 
     # راه‌اندازی و آموزش مدل
     with mesh:
-        model = GodModeDariushCosmic(config, mesh)
-        params = train_cosmic_dariush(model, tokenizer, mesh, config, datasets)
+        model = GodModeDariush(config, mesh)
+        params = train_dariush(model, tokenizer, mesh, config, datasets)
 
         # تست و اعتبارسنجی
         test_texts = [
@@ -938,12 +938,12 @@ if __name__ == "__main__":
             "علم کلید پیشرفت است",
             "هنر زبان احساسات است"
         ]
-        validate_cosmic_dariush(model, tokenizer, test_texts, "fa")
-        samples = generate_samples(model, tokenizer, test_texts, "fa")
+        validate_dariush(model, tokenizer, test_texts, "fa")
+        samples = generate_dariush_samples(model, tokenizer, test_texts, "fa")
         for i, sample in enumerate(samples):
             print(f"Sample {i+1}: {sample}")
 
 # این کد از سورس‌های زیر الهام گرفته شده:
 # - DariushGPT (Copyright (c) 2025 hosein davod abadi farahani)
 # - xAI Transformer (Copyright 2024 X.AI Corp., Apache License 2.0)
-# - الهام از LLaMA, Mixtral, GPT-4, Grok و تکنیک‌های کیهانی 2025
+# - الهام از LLaMA, Mixtral, GPT-4, Grok و تکنیک‌های پیشرفته 2025
