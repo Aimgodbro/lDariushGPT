@@ -1,5 +1,5 @@
-# GodModeDariushCosmic: The ultimate cosmic transformer, expanded to 1500 lines
-# Copyright (c) 2025 hosein davod abadi farahani & cosmic enhancements
+# GodModeDariushCosmic: The ultimate cosmic transformer
+# Copyright (c) 2025 hosein davod abadi farahani 
 
 import jax
 import jax.numpy as jnp
