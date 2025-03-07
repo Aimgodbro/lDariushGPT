@@ -14,11 +14,11 @@ import os
 class DariushConfig:
     def __init__(self):
         self.vocab_size = 50000
-        self.emb_size = 512
+        self.emb_size = 256  # کوچکتر برای سیستم‌های معمولی
         self.num_heads = 8
-        self.num_layers = 6
-        self.hidden_size = 2048
-        self.max_seq_len = 1024
+        self.num_layers = 4  # کاهش لایه‌ها برای سرعت
+        self.hidden_size = 1024  # کاهش اندازه مخفی
+        self.max_seq_len = 512  # کاهش طول برای حافظه کمتر
         self.num_experts = 4
         self.top_k = 2
         self.batch_size = self._dynamic_batch_size()
@@ -68,9 +68,9 @@ class PersianTokenizer:
 
 # 3. دیتاست
 class PersianDataset(Dataset):
-    def __init__(self, tokenizer, split="train"):
+    def __init__(self, tokenizer, split="train[:5%]"):  # افزایش دیتا به 5%
         self.tokenizer = tokenizer
-        self.data = load_dataset("oscar", "unshuffled_deduplicated_fa", split=split[:1000])["text"]
+        self.data = load_dataset("oscar", "unshuffled_deduplicated_fa", split=split)["text"]
 
     def __len__(self):
         return len(self.data)
@@ -141,6 +141,12 @@ class EnhancedTransformerLayer(nn.Module):
         q = self.rotary_emb.apply_rotary(q, rotary_emb)
         k = self.rotary_emb.apply_rotary(k, rotary_emb)
         q, k, v = q.view(B, S, self.emb_size), k.view(B, S, self.emb_size), v.view(B, S, self.emb_size)
+
+        # اضافه کردن ماسک علّی
+        if attention_mask is None:
+            attention_mask = torch.triu(torch.ones(S, S), diagonal=1).bool().to(x.device)
+            attention_mask = attention_mask[None, None, :, :]
+
         attn_output, _ = self.attn(q, k, v, attn_mask=attention_mask)
         x = self.norm1(x + self.dropout(attn_output))
         moe_output = self.moe(x)
@@ -162,7 +168,7 @@ class DariushGPT(nn.Module):
         x = self.norm(x)
         return self.output(x)
 
-# 5. آموزش (Trainer)
+# 5. آموزش و ارزیابی
 class DariushTrainer:
     def __init__(self, model, tokenizer):
         self.model = model.to(config.device)
@@ -189,8 +195,23 @@ class DariushTrainer:
                 self.scaler.update()
                 total_loss += loss.item()
 
-            print(f"Epoch {epoch+1}, Loss: {total_loss / len(loader):.4f}")
-            torch.save(self.model.state_dict(), "dariush.pth")
+            avg_loss = total_loss / len(loader)
+            print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
+            perplexity = self.evaluate(loader)
+            print(f"Perplexity: {perplexity:.4f}")
+            torch.save({"model_state": self.model.state_dict(), "config": vars(config)}, "dariush.pth")
+
+    def evaluate(self, loader):
+        self.model.eval()
+        total_loss = 0
+        with torch.no_grad():
+            for batch in loader:
+                inputs = batch["input_ids"].to(config.device)
+                labels = batch["labels"].to(config.device)
+                outputs = self.model(inputs)
+                loss = F.cross_entropy(outputs.view(-1, config.vocab_size), labels.view(-1))
+                total_loss += loss.item()
+        return torch.exp(torch.tensor(total_loss / len(loader)))
 
 # 6. قابلیت‌های جدید
 class QAModel:
@@ -211,21 +232,28 @@ class PoetryGenerator:
         self.model = model
         self.tokenizer = tokenizer
 
-    def generate(self, prompt, max_len=50):
+    def generate(self, prompt, max_len=50, temperature=0.7, top_k=40):
         input_ids = self.tokenizer.encode(prompt)
         input_tensor = torch.tensor([input_ids]).to(config.device)
         self.model.eval()
         with torch.no_grad():
             for _ in range(max_len):
                 logits = self.model(input_tensor)
-                next_token = torch.argmax(logits[:, -1, :], dim=-1).item()
+                next_token = self._sample(logits, temperature, top_k)
                 input_ids.append(next_token)
                 input_tensor = torch.tensor([input_ids]).to(config.device)
                 if next_token == self.tokenizer.token_to_id("[EOS]"):
                     break
         return self.tokenizer.decode(input_ids)
 
-def summarize_text(text, tokenizer, model, max_len=50):
+    def _sample(self, logits, temperature, top_k):
+        logits = logits / temperature
+        probs = torch.softmax(logits[:, -1, :], dim=-1)
+        top_k_probs, top_k_indices = torch.topk(probs, top_k)
+        next_token = torch.multinomial(top_k_probs, num_samples=1)
+        return top_k_indices[0][next_token].item()
+
+def summarize_text(text, tokenizer, model, max_len=50, temperature=0.7, top_k=40):
     tokens = tokenizer.encode(text)[:config.max_seq_len]
     input_ids = torch.tensor([tokens]).to(config.device)
     model.eval()
@@ -233,7 +261,7 @@ def summarize_text(text, tokenizer, model, max_len=50):
     with torch.no_grad():
         for _ in range(max_len):
             logits = model(input_ids)
-            next_token = torch.argmax(logits[:, -1, :], dim=-1).item()
+            next_token = PoetryGenerator(model, tokenizer)._sample(logits, temperature, top_k)
             summary_ids.append(next_token)
             input_ids = torch.tensor([tokens + summary_ids]).to(config.device)
             if next_token == tokenizer.token_to_id("[EOS]"):
@@ -243,10 +271,10 @@ def summarize_text(text, tokenizer, model, max_len=50):
 # 7. اجرای اصلی
 if __name__ == "__main__":
     tokenizer = PersianTokenizer()
-    tokenizer.train()
+    if not os.path.exists("tokenizer.json"):
+        tokenizer.train()
 
     dataset = PersianDataset(tokenizer)
-
     model = DariushGPT(config, tokenizer)
     trainer = DariushTrainer(model, tokenizer)
     trainer.train(dataset)
@@ -259,4 +287,3 @@ if __name__ == "__main__":
 
     print(summarize_text("متن طولانی درباره ایران...", tokenizer, model))
 # Copyright (c) 2025 hosein davod abadi farahani
-
